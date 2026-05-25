@@ -59,6 +59,8 @@ The Intelligent Invoice Processing system is built on a modular, event-driven ar
         │  - Weekly Reports    │
         └──────────────────────┘
 ```
+<img width="1545" height="435" alt="image" src="https://github.com/user-attachments/assets/145fc666-7226-4f03-ae70-bfb9d24dbe08" />
+
 
 ## Core Components
 
