@@ -1,0 +1,1156 @@
+{
+  "name": "Intelligent Invoice Processing",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "invoice-upload",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "1f94d1ed-f330-48bc-a603-5c659adc9901",
+      "name": "Invoice Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [
+        -1648,
+        288
+      ],
+      "webhookId": "invoice-processing-webhook"
+    },
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "triggerOn": "specificFolder",
+        "folderToWatch": {
+          "__rl": true,
+          "value": "1e9Zfrf54cAs6Wy_zAoZjYVGyBxPah41d",
+          "mode": "id"
+        },
+        "event": "fileCreated",
+        "options": {}
+      },
+      "id": "ace37abc-0c68-4052-b1c9-e58118ce173c",
+      "name": "Google Drive - New Invoice",
+      "type": "n8n-nodes-base.googleDriveTrigger",
+      "typeVersion": 1,
+      "position": [
+        -1648,
+        128
+      ],
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "sggxP1JHCRbiP9PK",
+          "name": "Google Drive OAuth2 API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "download",
+        "fileId": {
+          "__rl": true,
+          "value": "={{ $json.id }}",
+          "mode": "id"
+        },
+        "options": {}
+      },
+      "id": "34c346ac-32b1-4fb6-bdb7-3b165eb5dc30",
+      "name": "Download Invoice File",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        -1408,
+        128
+      ],
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "sggxP1JHCRbiP9PK",
+          "name": "Google Drive OAuth2 API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "condition-pdf",
+              "leftValue": "={{ $binary.data.mimeType }}",
+              "rightValue": "application/pdf",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "or"
+        },
+        "options": {}
+      },
+      "id": "2d58ea18-8835-40fd-aa89-ef6adae35a3d",
+      "name": "Check File Type",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -1168,
+        192
+      ]
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gpt-5",
+          "mode": "list",
+          "cachedResultName": "GPT-5"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "=You are an expert invoice extraction AI.\n\nExtract invoice details from this invoice text and return ONLY valid JSON.\n\nInvoice Text:\n{{ $json.text }}\n\nFields:\n{\n  \"invoice_number\": \"\",\n  \"invoice_date\": \"\",\n  \"due_date\": \"\",\n  \"vendor_name\": \"\",\n  \"vendor_email\": \"\",\n  \"vendor_phone\": \"\",\n  \"vendor_tax_id\": \"\",\n  \"bill_to_name\": \"\",\n  \"purchase_order_number\": \"\",\n  \"currency\": \"\",\n  \"subtotal\": 0,\n  \"tax_amount\": 0,\n  \"tax_rate\": 0,\n  \"discount_amount\": 0,\n  \"total_amount\": 0,\n  \"payment_terms\": \"\",\n  \"payment_method\": \"\",\n  \"notes\": \"\",\n  \"confidence_score\": 0,\n  \"line_items\": []\n}\n\nReturn ONLY JSON."
+            }
+          ]
+        },
+        "jsonOutput": true,
+        "options": {}
+      },
+      "id": "3492c137-1758-432d-95e2-90a19b25a989",
+      "name": "AI - Extract Invoice Data",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.4,
+      "position": [
+        -784,
+        144
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": null,
+          "name": "",
+          "__aiGatewayManaged": true
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse the AI response and validate extracted data\n\nconst input = $input.first().json;\n\n// GPT-4.1 jsonOutput returns structured JSON already\nlet invoiceData = input.message?.content || input;\n\n// If content is string, parse it\nif (typeof invoiceData === 'string') {\n  try {\n    const cleanedResponse = invoiceData\n      .replace(/```json\\n?/g, '')\n      .replace(/```\\n?/g, '')\n      .trim();\n\n    invoiceData = JSON.parse(cleanedResponse);\n  } catch (e) {\n    return [{\n      json: {\n        success: false,\n        error: 'Failed to parse AI response: ' + e.message,\n        raw_response: invoiceData\n      }\n    }];\n  }\n}\n\n// Validation rules\nconst validationErrors = [];\n\nif (!invoiceData.invoice_number)\n  validationErrors.push('Missing invoice number');\n\nif (!invoiceData.vendor_name)\n  validationErrors.push('Missing vendor name');\n\nif (!invoiceData.total_amount || invoiceData.total_amount <= 0)\n  validationErrors.push('Invalid or missing total amount');\n\nif (!invoiceData.invoice_date)\n  validationErrors.push('Missing invoice date');\n\n// Calculate line items subtotal\nlet calculatedSubtotal = 0;\n\nif (invoiceData.line_items && invoiceData.line_items.length > 0) {\n  calculatedSubtotal = invoiceData.line_items.reduce(\n    (sum, item) => sum + (item.total || 0),\n    0\n  );\n\n  const discrepancy = Math.abs(\n    calculatedSubtotal - (invoiceData.subtotal || 0)\n  );\n\n  if (discrepancy > 0.02) {\n    validationErrors.push(\n      `Line items sum (${calculatedSubtotal.toFixed(2)}) doesn't match subtotal (${invoiceData.subtotal})`\n    );\n  }\n}\n\n// Determine if manual review needed\nconst requiresReview =\n  validationErrors.length > 0 ||\n  (invoiceData.confidence_score &&\n    invoiceData.confidence_score < 80) ||\n  (invoiceData.total_amount &&\n    invoiceData.total_amount > 10000);\n\n// Format dates\nconst formatDate = (dateStr) => {\n  if (!dateStr) return null;\n\n  try {\n    return new Date(dateStr)\n      .toISOString()\n      .split('T')[0];\n  } catch {\n    return dateStr;\n  }\n};\n\n// Final processed data\nconst processedData = {\n  ...invoiceData,\n  invoice_date: formatDate(invoiceData.invoice_date),\n  due_date: formatDate(invoiceData.due_date),\n  validation_errors: validationErrors,\n  requires_review: requiresReview,\n  auto_approved: !requiresReview,\n  calculated_subtotal: calculatedSubtotal,\n  processing_timestamp: new Date().toISOString(),\n  processing_status: requiresReview\n    ? 'PENDING_REVIEW'\n    : 'AUTO_APPROVED'\n};\n\nreturn [{ json: processedData }];"
+      },
+      "id": "00c95969-dfba-4e44-a1ed-2a4e4f1bb6fd",
+      "name": "Parse & Validate Invoice Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -480,
+        128
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "auto-approve-condition",
+              "leftValue": "={{ $json.auto_approved }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "29b91b93-c4ad-4b12-9514-1685a1eb1163",
+      "name": "Auto-Approve or Review?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -240,
+        128
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "1bjScgJ8PD5equRIsGMabMk3RkPZqgHtI9_uCNUKUQ4g",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Approved Invoices",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Invoice Number": "={{ $json.invoice_number }}",
+            "Invoice Date": "={{ $json.invoice_date }}",
+            "Due Date": "={{ $json.due_date }}",
+            "Vendor Name": "={{ $json.vendor_name }}",
+            "Vendor Email": "={{ $json.vendor_email }}",
+            "Bill To": "={{ $json.bill_to_name }}",
+            "PO Number": "={{ $json.purchase_order_number }}",
+            "Currency": "={{ $json.currency }}",
+            "Total Amount": "={{ $json.total_amount }}",
+            "Status": "={{ $json.processing_status }}",
+            "Confidence Score": "={{ $json.confidence_score }}",
+            "Processed At": "={{ $json.processing_timestamp }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "Invoice Number",
+              "displayName": "Invoice Number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Invoice Date",
+              "displayName": "Invoice Date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Due Date",
+              "displayName": "Due Date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Vendor Name",
+              "displayName": "Vendor Name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Vendor Email",
+              "displayName": "Vendor Email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Bill To",
+              "displayName": "Bill To",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "PO Number",
+              "displayName": "PO Number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Total Amount",
+              "displayName": "Total Amount",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Currency",
+              "displayName": "Currency",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Validation Errors",
+              "displayName": "Validation Errors",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Confidence Score",
+              "displayName": "Confidence Score",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Status",
+              "displayName": "Status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Processed At",
+              "displayName": "Processed At",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "3cb612a0-0df4-4ee2-a39e-92100434f21e",
+      "name": "Save to Approved Invoices Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.4,
+      "position": [
+        0,
+        0
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "OxdQymOoflrmVEjz",
+          "name": "Google Sheets OAuth2 API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "1hUQk37b6gmmWlKd-9DHbMr3knssAke939MZ8MWr38aI",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Pending Review",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Invoice Number": "={{ $json.invoice_number }}",
+            "Invoice Date": "={{ $json.invoice_date }}",
+            "Due Date": "={{ $json.due_date }}",
+            "Vendor Name": "={{ $json.vendor_name }}",
+            "Vendor Email": "={{ $json.vendor_email }}",
+            "Bill To": "={{ $json.bill_to_name }}",
+            "PO Number": "={{ $json.purchase_order_number }}",
+            "Total Amount": "={{ $json.total_amount }}",
+            "Currency": "={{ $json.currency }}",
+            "Validation Errors": "={{ ($json.validation_errors || []).join(', ') }}",
+            "Confidence Score": "={{ $json.confidence_score }}",
+            "Status": "PENDING_REVIEW",
+            "Processed At": "={{ $json.processing_timestamp }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "Invoice Number",
+              "displayName": "Invoice Number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Invoice Date",
+              "displayName": "Invoice Date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Due Date",
+              "displayName": "Due Date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Vendor Name",
+              "displayName": "Vendor Name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Vendor Email",
+              "displayName": "Vendor Email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Bill To",
+              "displayName": "Bill To",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "PO Number",
+              "displayName": "PO Number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Total Amount",
+              "displayName": "Total Amount",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Currency",
+              "displayName": "Currency",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Validation Errors",
+              "displayName": "Validation Errors",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Confidence Score",
+              "displayName": "Confidence Score",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Status",
+              "displayName": "Status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Processed At",
+              "displayName": "Processed At",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "8dfd8ae0-472a-4425-acad-b89be21f23f1",
+      "name": "Save to Pending Review Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.4,
+      "position": [
+        0,
+        240
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "OxdQymOoflrmVEjz",
+          "name": "Google Sheets OAuth2 API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "accounting@yourcompany.com",
+        "subject": "✅ Auto-Approved Invoice: {{ $json['Invoice Number'] }} from {{ $json['Vendor Name'] }}",
+        "message": "<!DOCTYPE html><html><head><style>body{font-family:Arial,sans-serif;max-width:700px;margin:0 auto;padding:20px;background:#f5f5f5}.container{background:white;border-radius:10px;padding:30px;box-shadow:0 2px 10px rgba(0,0,0,0.1)}.header{background:linear-gradient(135deg,#10b981,#059669);color:white;padding:20px;border-radius:8px;margin-bottom:25px}.badge{background:#d1fae5;color:#065f46;padding:5px 15px;border-radius:20px;font-size:14px;font-weight:bold;display:inline-block;margin-bottom:15px}table{width:100%;border-collapse:collapse;margin:15px 0}th{background:#f0fdf4;color:#065f46;padding:10px;text-align:left;border-bottom:2px solid #10b981}td{padding:10px;border-bottom:1px solid #e5e7eb}.amount{font-size:24px;font-weight:bold;color:#10b981}.footer{text-align:center;color:#6b7280;font-size:13px;margin-top:25px;padding-top:15px;border-top:1px solid #e5e7eb}</style></head><body><div class='container'><div class='header'><div class='badge'>🤖 Auto-Approved</div><h2 style='margin:10px 0'>Invoice Automatically Processed</h2><p style='margin:5px 0;opacity:0.9'>No manual review required</p></div><table><tr><th colspan='2'>Invoice Details</th></tr><tr><td><strong>Invoice #</strong></td><td>{{ $json.invoice_number }}</td></tr><tr><td><strong>Vendor</strong></td><td>{{ $json.vendor_name }}</td></tr><tr><td><strong>Invoice Date</strong></td><td>{{ $json.invoice_date }}</td></tr><tr><td><strong>Due Date</strong></td><td>{{ $json.due_date }}</td></tr><tr><td><strong>Payment Terms</strong></td><td>{{ $json.payment_terms }}</td></tr><tr><td><strong>PO Number</strong></td><td>{{ $json.purchase_order_number || 'N/A' }}</td></tr></table><table><tr><th>Amount Breakdown</th><th style='text-align:right'>Amount ({{ $json.currency }})</th></tr><tr><td>Subtotal</td><td style='text-align:right'>{{ $json.subtotal }}</td></tr><tr><td>Tax ({{ $json.tax_rate }}%)</td><td style='text-align:right'>{{ $json.tax_amount }}</td></tr><tr><td>Discount</td><td style='text-align:right'>-{{ $json.discount_amount || 0 }}</td></tr><tr style='background:#f0fdf4'><td><strong>TOTAL</strong></td><td style='text-align:right' class='amount'><strong>{{ $json.total_amount }}</strong></td></tr></table><p style='color:#6b7280;font-size:13px;background:#f9fafb;padding:10px;border-radius:5px'>🎯 AI Confidence Score: {{ $json.confidence_score }}% &nbsp;|&nbsp; ⏰ Processed: {{ $json.processing_timestamp }}</p><div class='footer'><p>This invoice was automatically processed by the Invoice AI System</p><p style='color:#10b981'>✓ Data validated &nbsp;|&nbsp; ✓ Amounts verified &nbsp;|&nbsp; ✓ Saved to records</p></div></div></body></html>",
+        "options": {}
+      },
+      "id": "cb4bbe13-81c0-4183-bba0-9208a4c5ef76",
+      "name": "Email - Auto-Approved Confirmation",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        240,
+        0
+      ],
+      "webhookId": "5f7a5795-b912-4a78-8d25-c3740168ba53",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "eQk5vQkBJUN2dn11",
+          "name": "Gmail OAuth2 API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "accounting@yourcompany.com",
+        "subject": "=⚠️ Invoice Needs Review: {{ $json['Invoice Number'] }} from {{ $json['Vendor Name'] }}",
+        "message": "<!DOCTYPE html><html><head><style>body{font-family:Arial,sans-serif;max-width:700px;margin:0 auto;padding:20px;background:#f5f5f5}.container{background:white;border-radius:10px;padding:30px;box-shadow:0 2px 10px rgba(0,0,0,0.1)}.header{background:linear-gradient(135deg,#f59e0b,#d97706);color:white;padding:20px;border-radius:8px;margin-bottom:25px}.badge{background:#fef3c7;color:#92400e;padding:5px 15px;border-radius:20px;font-size:14px;font-weight:bold;display:inline-block;margin-bottom:15px}.error-box{background:#fef2f2;border-left:4px solid #ef4444;padding:15px;border-radius:5px;margin:15px 0}table{width:100%;border-collapse:collapse;margin:15px 0}th{background:#fffbeb;color:#92400e;padding:10px;text-align:left;border-bottom:2px solid #f59e0b}td{padding:10px;border-bottom:1px solid #e5e7eb}.amount{font-size:24px;font-weight:bold;color:#d97706}.cta-btn{background:#f59e0b;color:white;padding:12px 30px;border-radius:8px;text-decoration:none;display:inline-block;margin-top:15px;font-weight:bold}.footer{text-align:center;color:#6b7280;font-size:13px;margin-top:25px;padding-top:15px;border-top:1px solid #e5e7eb}</style></head><body><div class='container'><div class='header'><div class='badge'>⚠️ Manual Review Required</div><h2 style='margin:10px 0'>Invoice Flagged for Review</h2><p style='margin:5px 0;opacity:0.9'>Please review and approve or reject this invoice</p></div><div class='error-box'><strong>🔍 Issues Found:</strong><ul>{{ $json.validation_errors.map(e => '<li>' + e + '</li>').join('') }}</ul><p style='margin:5px 0'>AI Confidence Score: <strong>{{ $json.confidence_score }}%</strong></p></div><table><tr><th colspan='2'>Extracted Invoice Details</th></tr><tr><td><strong>Invoice #</strong></td><td>{{ $json.invoice_number || 'NOT FOUND' }}</td></tr><tr><td><strong>Vendor</strong></td><td>{{ $json.vendor_name || 'NOT FOUND' }}</td></tr><tr><td><strong>Invoice Date</strong></td><td>{{ $json.invoice_date || 'NOT FOUND' }}</td></tr><tr><td><strong>Due Date</strong></td><td>{{ $json.due_date || 'NOT FOUND' }}</td></tr><tr><td><strong>PO Number</strong></td><td>{{ $json.purchase_order_number || 'N/A' }}</td></tr></table><table><tr><th>Amount</th><th style='text-align:right'>Value</th></tr><tr><td>Subtotal</td><td style='text-align:right'>{{ $json.currency }} {{ $json.subtotal }}</td></tr><tr><td>Tax</td><td style='text-align:right'>{{ $json.currency }} {{ $json.tax_amount }}</td></tr><tr style='background:#fffbeb'><td><strong>TOTAL</strong></td><td style='text-align:right' class='amount'><strong>{{ $json.currency }} {{ $json.total_amount }}</strong></td></tr></table><p style='text-align:center'><a href='https://docs.google.com/spreadsheets/d/1hUQk37b6gmmWlKd-9DHbMr3knssAke939MZ8MWr38aI' class='cta-btn'>📊 Review in Google Sheets</a></p><div class='footer'><p>⏰ Processed: {{ $json.processing_timestamp }}</p><p>This invoice has been saved to the Pending Review sheet and awaits your action.</p></div></div></body></html>",
+        "options": {}
+      },
+      "id": "1ce0c299-de64-4443-986f-3f46c2ae82a2",
+      "name": "Email - Review Required Alert",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        240,
+        240
+      ],
+      "webhookId": "237ccddc-426f-40ed-a665-bffcef9d6ac7",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "eQk5vQkBJUN2dn11",
+          "name": "Gmail OAuth2 API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Generate summary statistics for reporting\n\nconst invoice = $input.first().json;\n\n// Create a structured log entry\nconst logEntry = {\n  timestamp: new Date().toISOString(),\n\n  invoice_number: invoice.invoice_number || '',\n  invoice_date: invoice.invoice_date || '',\n  vendor_name: invoice.vendor_name || '',\n\n  amount: invoice.total_amount || 0,\n  currency: invoice.currency || '',\n\n  status: invoice.processing_status || '',\n  confidence: invoice.confidence_score || 0,\n\n  auto_processed: invoice.auto_approved || false,\n\n  validation_errors_count:\n    invoice.validation_errors?.length || 0,\n\n  processing_time_ms:\n    invoice.processing_timestamp\n      ? Date.now() -\n        new Date(invoice.processing_timestamp).getTime()\n      : 0,\n\n  week_number: (() => {\n    const d = new Date();\n\n    d.setHours(0, 0, 0, 0);\n\n    d.setDate(\n      d.getDate() + 3 - (d.getDay() + 6) % 7\n    );\n\n    const week1 = new Date(\n      d.getFullYear(),\n      0,\n      4\n    );\n\n    return (\n      1 +\n      Math.round(\n        (\n          (\n            d.getTime() -\n            week1.getTime()\n          ) /\n          86400000 -\n          3 +\n          (\n            week1.getDay() + 6\n          ) %\n          7\n        ) / 7\n      )\n    );\n  })()\n};\n\nreturn [\n  {\n    json: logEntry\n  }\n];"
+      },
+      "id": "d74749cc-ba4f-4cdb-86cb-30a52db30182",
+      "name": "Log Processing Metrics",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        128
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "1Ur_8-QDud8snPwljJoaI9ruzjbf2QY-6IeCbRTgomvo",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Processing Log",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Invoice Number": "={{ $json.invoice_number }}",
+            "Currency": "={{ $json.currency }}",
+            "Status": "={{ $json.status }}",
+            "Validation Errors": "={{ $json.validation_errors_count }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "Invoice Number",
+              "displayName": "Invoice Number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Invoice Date",
+              "displayName": "Invoice Date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Due Date",
+              "displayName": "Due Date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Vendor Name",
+              "displayName": "Vendor Name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Vendor Email",
+              "displayName": "Vendor Email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Bill To",
+              "displayName": "Bill To",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "PO Number",
+              "displayName": "PO Number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Total Amount",
+              "displayName": "Total Amount",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Currency",
+              "displayName": "Currency",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Validation Errors",
+              "displayName": "Validation Errors",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Confidence Score",
+              "displayName": "Confidence Score",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Status",
+              "displayName": "Status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Processed At",
+              "displayName": "Processed At",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "ecbafe96-600f-4f2e-863d-918a56455179",
+      "name": "Save Processing Log",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.4,
+      "position": [
+        720,
+        128
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "OxdQymOoflrmVEjz",
+          "name": "Google Sheets OAuth2 API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ success: true, message: 'Invoice processed successfully', invoice_number: $json.invoice_number, status: $json.processing_status, confidence_score: $json.confidence_score }) }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "4335d275-d41e-45bb-a7ab-25c0c6e3fd66",
+      "name": "Webhook Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        720,
+        288
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "weeks",
+              "triggerAtDay": [
+                1
+              ],
+              "triggerAtHour": 8
+            }
+          ]
+        }
+      },
+      "id": "f15325e6-6b54-4e07-a7fe-e373f64dc86e",
+      "name": "Weekly Report Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -1648,
+        480
+      ]
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "159vqwPh0VidMmCPWEEah92_hgPV-ja40DoFA3tevDoM",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Invoice processing3",
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "id": "1d9fb059-38b4-488e-bc1a-e8b3724de673",
+      "name": "Read Processing Log",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.4,
+      "position": [
+        -1408,
+        480
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "OxdQymOoflrmVEjz",
+          "name": "Google Sheets OAuth2 API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Generate weekly analytics report\nconst allRows = $input.all().map(item => item.json);\n\n// Get current week number\nconst getWeekNumber = (d) => {\n  d = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));\n  d.setUTCDate(d.getUTCDate() + 4 - (d.getUTCDay() || 7));\n  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));\n  return Math.ceil((((d - yearStart) / 86400000) + 1) / 7);\n};\n\nconst currentWeek = getWeekNumber(new Date());\nconst lastWeek = currentWeek - 1;\n\n// Filter last week's data\nconst lastWeekData = allRows.filter(row => parseInt(row['Week Number']) === lastWeek);\n\nconst totalProcessed = lastWeekData.length;\nconst autoApproved = lastWeekData.filter(r => r['Auto Processed'] === 'true' || r['Auto Processed'] === true).length;\nconst pendingReview = totalProcessed - autoApproved;\nconst autoApprovalRate = totalProcessed > 0 ? ((autoApproved / totalProcessed) * 100).toFixed(1) : 0;\n\n// Calculate time saved (assuming 3 min per manual invoice vs 10 sec automated)\nconst manualMinutesPerInvoice = 3;\nconst automatedSecondsPerInvoice = 10;\nconst minutesSaved = (autoApproved * manualMinutesPerInvoice) - (autoApproved * automatedSecondsPerInvoice / 60);\nconst hoursSaved = (minutesSaved / 60).toFixed(1);\n\n// Total amounts\nconst validAmounts = lastWeekData.filter(r => r['Amount'] && !isNaN(parseFloat(r['Amount'])));\nconst totalAmount = validAmounts.reduce((sum, r) => sum + parseFloat(r['Amount']), 0);\n\n// Average confidence\nconst avgConfidence = lastWeekData.length > 0\n  ? (lastWeekData.reduce((sum, r) => sum + (parseFloat(r['AI Confidence']) || 0), 0) / lastWeekData.length).toFixed(1)\n  : 0;\n\n// Top vendors\nconst vendorCounts = {};\nlastWeekData.forEach(r => {\n  if (r['Vendor']) vendorCounts[r['Vendor']] = (vendorCounts[r['Vendor']] || 0) + 1;\n});\nconst topVendors = Object.entries(vendorCounts)\n  .sort(([,a], [,b]) => b - a)\n  .slice(0, 5)\n  .map(([vendor, count]) => `${vendor}: ${count}`);\n\nreturn [{\n  json: {\n    week_number: lastWeek,\n    report_generated: new Date().toISOString(),\n    total_processed: totalProcessed,\n    auto_approved: autoApproved,\n    pending_review: pendingReview,\n    auto_approval_rate: autoApprovalRate,\n    hours_saved: hoursSaved,\n    total_invoice_amount: totalAmount.toFixed(2),\n    avg_confidence_score: avgConfidence,\n    top_vendors: topVendors.join(' | '),\n    projected_annual_hours_saved: (parseFloat(hoursSaved) * 52).toFixed(0)\n  }\n}];"
+      },
+      "id": "3c9cb4a0-1b74-4a78-98a4-c73fbcc316d5",
+      "name": "Generate Weekly Analytics",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1168,
+        480
+      ]
+    },
+    {
+      "parameters": {
+        "sendTo": "management@yourcompany.com",
+        "subject": "📊 Weekly Invoice Processing Report - Week {{ $json.week_number }}",
+        "message": "<!DOCTYPE html><html><head><style>body{font-family:Arial,sans-serif;max-width:700px;margin:0 auto;padding:20px;background:#f5f5f5}.container{background:white;border-radius:10px;padding:30px;box-shadow:0 2px 10px rgba(0,0,0,0.1)}.header{background:linear-gradient(135deg,#6366f1,#4f46e5);color:white;padding:25px;border-radius:8px;margin-bottom:25px;text-align:center}.stats-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:15px;margin:20px 0}.stat-card{background:#f8f9ff;border-radius:8px;padding:20px;text-align:center;border-left:4px solid #6366f1}.stat-value{font-size:32px;font-weight:bold;color:#4f46e5}.stat-label{color:#6b7280;font-size:14px;margin-top:5px}.highlight{background:linear-gradient(135deg,#ecfdf5,#d1fae5);border-radius:8px;padding:20px;margin:20px 0;border:1px solid #10b981}.section-title{color:#374151;font-weight:bold;font-size:16px;margin:20px 0 10px;border-bottom:2px solid #e5e7eb;padding-bottom:8px}table{width:100%;border-collapse:collapse}th{background:#f3f4f6;padding:10px;text-align:left;font-size:14px}td{padding:10px;border-bottom:1px solid #f3f4f6;font-size:14px}.footer{text-align:center;color:#9ca3af;font-size:12px;margin-top:25px;padding-top:15px;border-top:1px solid #e5e7eb}</style></head><body><div class='container'><div class='header'><h2 style='margin:0'>📊 Invoice Processing Weekly Report</h2><p style='margin:8px 0 0;opacity:0.85'>Week {{ $json.week_number }} • Generated {{ $json.report_generated.split('T')[0] }}</p></div><div class='highlight'><h3 style='margin:0 0 10px;color:#065f46'>🎯 This Week's Impact</h3><p style='font-size:28px;margin:0;font-weight:bold;color:#10b981'>{{ $json.hours_saved }} hours saved</p><p style='color:#374151;margin:8px 0 0'>Equivalent to ~{{ Math.round($json.hours_saved / 2) }} full work days recovered</p><p style='color:#6b7280;font-size:13px;margin:5px 0 0'>📈 Projected annual savings: {{ $json.projected_annual_hours_saved }} hours (~{{ Math.round($json.projected_annual_hours_saved / 8) }} workdays)</p></div><div class='stats-grid'><div class='stat-card'><div class='stat-value'>{{ $json.total_processed }}</div><div class='stat-label'>Total Invoices Processed</div></div><div class='stat-card'><div class='stat-value'>{{ $json.auto_approval_rate }}%</div><div class='stat-label'>Auto-Approval Rate</div></div><div class='stat-card'><div class='stat-value'>{{ $json.auto_approved }}</div><div class='stat-label'>Auto-Approved ✅</div></div><div class='stat-card'><div class='stat-value'>{{ $json.pending_review }}</div><div class='stat-label'>Flagged for Review ⚠️</div></div></div><p class='section-title'>📋 Financial Summary</p><table><tr><th>Metric</th><th>Value</th></tr><tr><td>Total Invoice Volume</td><td><strong>${{ $json.total_invoice_amount }}</strong></td></tr><tr><td>Average AI Confidence Score</td><td><strong>{{ $json.avg_confidence_score }}%</strong></td></tr><tr><td>Top Vendors This Week</td><td>{{ $json.top_vendors }}</td></tr></table><div class='footer'><p>🤖 Powered by n8n Intelligent Invoice Processing System</p><p>Questions? Contact your IT administrator</p></div></div></body></html>",
+        "options": {}
+      },
+      "id": "de01d469-1401-4c40-bcb3-677449cb5de6",
+      "name": "Send Weekly Report Email",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        -928,
+        480
+      ],
+      "webhookId": "4027ab99-2e3e-4584-9903-b376ad35102b",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "eQk5vQkBJUN2dn11",
+          "name": "Gmail OAuth2 API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "err-1",
+              "name": "error",
+              "value": "Unsupported file type. Only PDF files are accepted.",
+              "type": "string"
+            },
+            {
+              "id": "err-2",
+              "name": "success",
+              "value": false,
+              "type": "boolean"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "744aa542-c905-456d-93b3-f8c59f2d256d",
+      "name": "Unsupported File Type Error",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -704,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "condition-webhook-pdf",
+              "leftValue": "={{ $binary?.data?.mimeType ?? $json?.mimeType ?? 'application/pdf' }}",
+              "rightValue": "application/pdf",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "or"
+        },
+        "options": {}
+      },
+      "id": "2c1125fd-c55c-414c-ad60-a05144b1ca81",
+      "name": "Check Webhook File Type",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -1408,
+        288
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "pdf",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1.1,
+      "position": [
+        -960,
+        192
+      ],
+      "id": "6a267ae5-bc4f-40eb-b3f2-24891ea53b4b",
+      "name": "Extract from File"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Google Drive - New Invoice": {
+      "main": [
+        [
+          {
+            "node": "Download Invoice File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download Invoice File": {
+      "main": [
+        [
+          {
+            "node": "Check File Type",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Invoice Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Check Webhook File Type",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check File Type": {
+      "main": [
+        [
+          {
+            "node": "Extract from File",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Unsupported File Type Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI - Extract Invoice Data": {
+      "main": [
+        [
+          {
+            "node": "Parse & Validate Invoice Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse & Validate Invoice Data": {
+      "main": [
+        [
+          {
+            "node": "Auto-Approve or Review?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Auto-Approve or Review?": {
+      "main": [
+        [
+          {
+            "node": "Save to Approved Invoices Sheet",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Log Processing Metrics",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Save to Pending Review Sheet",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Log Processing Metrics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save to Approved Invoices Sheet": {
+      "main": [
+        [
+          {
+            "node": "Email - Auto-Approved Confirmation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save to Pending Review Sheet": {
+      "main": [
+        [
+          {
+            "node": "Email - Review Required Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Processing Metrics": {
+      "main": [
+        [
+          {
+            "node": "Save Processing Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Weekly Report Trigger": {
+      "main": [
+        [
+          {
+            "node": "Read Processing Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Processing Log": {
+      "main": [
+        [
+          {
+            "node": "Generate Weekly Analytics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Weekly Analytics": {
+      "main": [
+        [
+          {
+            "node": "Send Weekly Report Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Webhook File Type": {
+      "main": [
+        [
+          {
+            "node": "Extract from File",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Unsupported File Type Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract from File": {
+      "main": [
+        [
+          {
+            "node": "AI - Extract Invoice Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "6a9584ca-59c4-4c23-b4ce-683031cc3c2b",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "801765782b9c4b4b9d13dda71db802a669ec83c1cd978bf59ca499d5c74c061e"
+  },
+  "nodeGroups": [],
+  "id": "4jRW64tFYknG3iat",
+  "tags": []
+}
